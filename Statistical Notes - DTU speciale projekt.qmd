@@ -1,0 +1,407 @@
+---
+title: "Notes on DTU speciale projekt"
+format:
+  html:
+      grid:
+        sidebar-width: 350px
+#   PrettyPDF-pdf:
+#     keep-tex: true
+# editor: visual
+# editor_options: 
+#   chunk_output_type: console
+# code-line-numbers: true
+# code-block-bg: '#56B4E9' 
+knitr:
+  opts_chunk:
+    comment: "#>"
+    collapse: true
+execute:
+  warning: false
+  message: false
+  cache: true
+  freeze: auto
+editor_options: 
+  chunk_output_type: console
+---
+
+## Reading Data
+
+I first start to read all data in folder and append to one large data frame in order to work with the data conveniently
+
+```{r data reading}
+
+# Cleaning environment 
+rm(list=ls())
+graphics.off()
+
+# Reading relevant libraries 
+library(tidyverse) # Data wrangling
+library(patchwork) # plot organizing
+library(EnvStats) # for sample size adding 
+library(sjPlot)
+
+data.path <- "C:/Users/MussabAbdul-RazzakKa/Desktop/new r proj/til upload/"
+
+# Function to read CSV files and add source variables
+read_and_process_data <- function(subject_folder, time_of_day, health_status) {
+  csv_path <- paste0(data.path,subject_folder,"/",time_of_day,"/",health_status, ".csv")
+  
+  if (file.exists(csv_path)) {
+    data <- read.csv(csv_path)
+    
+    # Add source variables
+    data$Subject <- subject_folder
+    data$TimeOfDay <- time_of_day
+    data$HealthStatus <- health_status
+    data$row_id <- seq_len(nrow(data))
+    
+    return(data)
+  } else {
+    warning(paste("File not found:", csv_path))
+    return(NULL)
+  }
+}
+
+# Initialize an empty dataframe to store the combined data
+raw.data <- data.frame()
+
+# Loop through all subjects, times of day, and health statuses
+for (subject_folder in list.files(file.path(paste0(getwd(),"/",dir())))) {
+  for (time_of_day in c("Day", "Night")) {
+    for (health_status in c("Healthy_snippet", "Sick_snippet")) {
+      data <- read_and_process_data(subject_folder, time_of_day, health_status)
+      
+      if (!is.null(data)) {
+        raw.data <- bind_rows(raw.data, data)
+      }
+    }
+  }
+}
+
+# View the resulting dataframe
+# print(raw.data)
+
+# renaming variale for joining 
+names(raw.data)[17] <- "Subject.ID"
+
+# Reading subjects data
+subjects_data <- read.csv("Pre Testing Questionnarie1.csv/Pre Testing Questionnarie1.csv")
+names(subjects_data)[2] <- "Subject.ID"
+subjects_data$Subject.ID <- as.character(subjects_data$Subject.ID)
+
+
+# Now we rename the long variable names in subject data
+subjects_data <-  subjects_data |> 
+  dplyr::select(Tidsstempel,Subject.ID,Age,Gender,
+         illness=Any.illnesses.diagnoses.to.be.aware.of.that.might.affect.the.results.,
+         diagnose = If.you.answered.yes..Can.you.briefly.describe.your.illness.diagnose,
+         glasses=Do.you.need.glasses.when.looking.at.a.computer.screen.,
+         blurriness=If.you.answered.yes..How.blurry.is.your.vision.when.looking.at.a.computer.screen.without.glasses.,
+         SickDrive = Do.you.experience.motion.sickness.while.driving.,
+         SickSea =Do.you.experience.motion.sickness.while.being.at.sea.,
+         ExperienceVR=Experience.with.Virtual.Reality)
+
+# Joining data
+raw.data.joined <- left_join(raw.data,subjects_data,by="Subject.ID") |> 
+  mutate_at(c("TimeOfDay","Age","Gender","glasses","HealthStatus","illness","diagnose","blurriness","SickDrive","SickSea","ExperienceVR"),as.factor) 
+  
+
+IDkey <- data.frame(ID =as.character(c(1:20)),Subject.ID=c("134562","192342","213456" ,"274536", "324532", "345621" ,"362745", "362754","436275", "453627", "456213","547236","562134","621345", "627453","627543","745362","843921","992934","999999"))
+
+raw.data.joined <- raw.data.joined |>  left_join(IDkey,by="Subject.ID") 
+
+dim(raw.data)
+
+```
+
+## Exploratory Data Analysis
+
+### Subsetting data
+
+We then dig into data and try to be curious and see patterns and structures by plotting different variables
+
+```{r subsetting data}
+
+# subData should only include rows that are not NA for all the relevant parameters we are interested in. This is in order to mitigate missing data issues later on, and during modelling. 
+subData <- raw.data.joined |> 
+  filter_at(vars(FPS,HR,BVP,EDA,TEMP,roll_x,pitch_y,yaw_z,Pupil.diameter.left,Pupil.diameter.right),
+            all_vars(!is.na(.))) |>  
+  
+  dplyr::select(-Subject.ID,Timestamp,ID,TimeOfDay,Age,Gender,illness,diagnose,glasses,blurriness,SickDrive,SickSea,ExperienceVR,
+         FPS,HR,BVP,EDA,TEMP,roll_x,pitch_y,yaw_z,Pupil.diameter.left,Pupil.diameter.right,HealthStatus,row_id) |> 
+ 
+  dplyr::select(row_id,Timestamp,ID,everything()) |> 
+  mutate_at("ID",as.factor) |> 
+  mutate(HealthStatus = factor(HealthStatus,
+                        levels = c("Sick_snippet", "Healthy_snippet"),
+                        labels = c("Sick", "Healthy"))) |> 
+  
+  glimpse()
+
+
+fullData <- raw.data.joined |> 
+  
+  dplyr::select(-Subject.ID,row_id,Timestamp,ID,TimeOfDay,Age,Gender,illness,diagnose,glasses,blurriness,SickDrive,SickSea,ExperienceVR,
+         FPS,HR,BVP,EDA,TEMP,roll_x,pitch_y,yaw_z,Pupil.diameter.left,Pupil.diameter.right,HealthStatus) |> 
+ 
+  dplyr::select(row_id, Timestamp,ID,everything()) |> 
+  mutate_at("ID",as.factor) |> 
+  mutate(HealthStatus = factor(HealthStatus,
+                        levels = c("Sick_snippet", "Healthy_snippet"),
+                        labels = c("Sick", "Healthy"))) |> 
+  
+  glimpse()
+
+
+```
+
+### Missing data
+
+```{r missing data, echo=TRUE }
+
+# # Missing Data  ----------------------------------------------------------- 
+library(visdat)
+# # visualisation of missing data  
+p1 <- vis_miss(fullData,warn_large_data = FALSE)
+p1
+p2 <- vis_miss(subData)
+p2
+
+# Creating the x-axis for the plots
+
+
+library(naniar)
+# handling missing data
+p1 <- ggplot(subData , aes(x = row_id, y = FPS,col=ID,fill=ID))+
+  geom_line() +
+  facet_wrap( ~ HealthStatus)+
+  labs(title = "FPS as a Function of x_time",
+       x = "x_time",
+       y = "FPS")   +
+  theme_minimal()
+p1
+# Error saying 115 rows containing missing values. To inspect those
+
+p2 <- ggplot(raw.data, aes(x = row_id, y = FPS,col=ID,fill=ID))+
+  geom_line() +
+  geom_miss_point()+
+  facet_wrap( ~ HealthStatus)+
+  labs(title = "FPS as a Function of x_time",
+       x = "x_time",
+       y = "FPS")   +
+  theme_minimal()+    
+p1/p2
+
+# Correlation analysis ---------------------------------------------------- 
+library(GGally)
+#ggpairs(subData, 
+#mapping = aes(colour = HealthStatus), 
+#columns = c(4,5,12,13,14,15,16,17),lower = list(continuous = "smooth"))
+```
+
+### Descriptive statistics 
+
+```{r Descriptive statistics }
+library(vtable )
+
+st(subData  |>  dplyr::select(-ID),
+   group = "HealthStatus",
+   col.align = 'center')
+
+```
+
+### Visualisation 
+
+The following boxplots are ment for exploratory purposes. The boxplots shows many statistical parameters in one plot, so in stead of plotting all sorts of distribution plots, and mean and standard deviation plots, the boxplot captures all of that.
+
+```{r Exploratory Data Analysis}
+
+n_fun <- function(x){
+  return(data.frame(y = 0,
+                    label = length(x)))
+}
+
+
+# variable assignment for plotting
+y_variables <- names(subData)[-c(1:3,19:30)]
+x_variable = "HealthStatus"
+groups = c("Age","Gender")
+
+# Plotting-------------------------------
+# Nested loop to create and save plots
+for (y_variable in y_variables) {
+  for (group in groups) {
+
+#     # For testing
+#     y_variable <- "Gaze.point.Y"
+#     group <- "Age"
+
+    p1 <- ggplot(subData,aes(x=.data[[x_variable]],y=.data[[y_variable]],fill=HealthStatus,col=HealthStatus)) + 
+      geom_boxplot(alpha=0.7)+
+      facet_wrap(~ .data[[group]])+
+stat_summary(fun.data = n_fun, geom = "text", hjust = 0.5)+
+    labs(title =paste0(y_variable,' as function of ',group))+
+      xlab("Cybersickness")+
+      ylab(paste0(y_variable))+
+      theme(legend.position = "none")+
+      theme_classic()
+    
+    p1
+    ggsave(paste0('outcomes/',y_variable,'_',group,'.png'),dpi = 150)
+  }
+}
+
+
+```
+
+## Statistical Modelling
+
+Then when having done enough exploratory data analysis we start modelling. Since our dependent variable 'HealthStatus' which is the indicator for developing CS or not as the interesting outcome. Since it is a binary outcome we need to thing about binomial family of models here we will try logistic modelling.
+
+
+```{r base model }
+
+# Define the base model (intercept-only) for full and sub data
+base.model.full <- glm(HealthStatus ~ 1, data = fullData, family = binomial(link='logit'))
+summary(base.model.full)
+
+base.model.sub <- glm(HealthStatus ~ 1, data = subData, family = binomial(link='logit'))
+summary(base.model.sub)
+
+# Gathering results for base models
+tab_model(base.model.full,base.model.sub,
+          dv.labels = c("Full","Sub"),
+          show.aic = T,show.obs = T)
+
+```
+
+
+
+```{r full model,echo=TRUE}
+
+# Define the scope model (full model)
+init.fullModel <- glm(HealthStatus ~ Age + Gender + FPS + HR + BVP + EDA + TEMP +
+                     roll_x + pitch_y +yaw_z + 
+                     Pupil.diameter.left + 
+                     Pupil.diameter.right+
+                     Gaze.point.X+
+                     Gaze.point.Y+
+                     ExperienceVR+
+                     illness,
+                   data = fullData, family = binomial(link='logit'))
+# summary(init.fullModel)
+
+# Define the scope model (sub model)
+init.subModel <- glm(HealthStatus ~ Age + Gender + FPS + HR + BVP + EDA + TEMP +
+                     roll_x + pitch_y +yaw_z + 
+                     Pupil.diameter.left + 
+                     Pupil.diameter.right+
+                     Gaze.point.X+
+                     Gaze.point.Y+
+                     ExperienceVR+
+                     illness,
+                   data = subData, family = binomial(link='logit'))
+tab_model(list(init.subModel,init.fullModel),
+          show.aic = T,
+          show.obs = T,
+          dv.labels = c("Full","Sub"))
+
+
+```
+
+
+```{r, echo=TRUE}
+cat(
+'Base model full AIC = ',base.model.full$aic,' \n', 
+'Base model sub AIC = ',base.model.sub$aic,' \n',
+'Initial model full AIC = ',init.fullModel$aic, ' \n', 
+'Initial model sub AIC = ',init.subModel$aic) 
+
+
+```
+
+
+```{r, echo=TRUE}
+# Removing Pupil.diameter.right
+subModel1 <- glm(HealthStatus ~ Age + Gender + FPS + HR + BVP + EDA + TEMP +
+                     roll_x + pitch_y +yaw_z + 
+                     Pupil.diameter.left + 
+                     Gaze.point.Y+
+                     Gaze.point.Y+
+                     ExperienceVR+
+                     illness,
+                     data = subData, family = binomial(link='logit'))
+summary(subModel1)
+subModel1$aic
+```
+
+```{r, echo=TRUE}
+# Removing BVP
+subModel2 <- glm(HealthStatus ~ Age + Gender + FPS + HR  + EDA + TEMP +
+                     roll_x + pitch_y +yaw_z + 
+                     Pupil.diameter.left + 
+                     Gaze.point.Y+
+                     Gaze.point.Y+
+                     ExperienceVR+
+                     illness,
+                     data = subData, family = binomial(link='logit'))
+summary(subModel2)
+subModel2$aic
+```
+
+```{r, echo=TRUE}
+# Removing HR
+subModel3 <- glm(HealthStatus ~ Age + Gender + FPS + EDA + TEMP +
+                     roll_x + pitch_y +yaw_z + 
+                     Pupil.diameter.left + 
+                     Gaze.point.Y+
+                     Gaze.point.Y+
+                     ExperienceVR+
+                     illness,
+                     data = subData, family = binomial(link='logit'))
+summary(subModel3)
+subModel3$aic
+```
+
+```{r, echo=TRUE}
+# Removing pitch_y
+subModel4 <- glm(HealthStatus ~ Age + Gender + FPS + EDA + TEMP +
+                     roll_x  +yaw_z + 
+                     Pupil.diameter.left + 
+                     Gaze.point.Y+
+                     Gaze.point.Y+
+                     ExperienceVR+
+                     illness,
+                     data = subData, family = binomial(link='logit'))
+summary(subModel4)
+subModel4$aic
+```
+
+
+
+```{r Gathering results, echo=TRUE }
+library(sjPlot)
+tab_model(list(base.model.sub,
+               init.subModel,
+               subModel1,
+               subModel2,
+               subModel3,
+               subModel4),
+          show.aic = TRUE,show.obs = T,auto.label = TRUE,
+          dv.labels = c("base.model", "Initial Model", "subModel1", 
+                        "subModel2","subModel3","subModel4"),
+          file = "outcomes/ModelOutputBorderLine.html")
+
+library(parameters)
+print_md(model_parameters(subModel4))
+
+```
+
+
+
+```{r Automatic Backward selection}
+library(MASS)
+# Perform automatic backward selection using stepAIC
+final_model.sub <- stepAIC(init.subModel, direction = "backward")
+
+```
